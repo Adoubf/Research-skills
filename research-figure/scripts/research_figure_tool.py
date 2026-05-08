@@ -28,6 +28,7 @@ REQUIRED_REFERENCES = [
     "qa-contract.md",
     "r-workflow.md",
     "r-template-index.md",
+    "plottie-reference.md",
 ]
 
 DATA_EXTENSIONS = {

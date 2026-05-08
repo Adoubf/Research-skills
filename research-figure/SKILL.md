@@ -57,6 +57,7 @@ claim, source data, and target output instead of starting from a favorite plotti
 - Use `references/r-workflow.md` for R implementation and export patterns.
 - Use `references/r-template-index.md` only when the user chooses R and provides or mentions private R templates.
 - Use `references/qa-contract.md` before final delivery or revision packages.
+- Use `references/plottie-reference.md` only when searching for public visual inspiration from Plottie metadata.
 
 ## Privacy and Provenance
 
@@ -86,6 +87,16 @@ uv run research-figure-tool pack-skill research-figure --out dist
 ```
 
 The script validates project data directories, rendered figure QA metadata, export bundles, and skill package structure. It does not call any LLM API.
+
+Use `scripts/search_plottie_reference.py` to search the bundled metadata-only Plottie
+reference index:
+
+```bash
+python scripts/search_plottie_reference.py --query heatmap --limit 5
+python scripts/search_plottie_reference.py --plot-type line --journal "Nature Materials"
+```
+
+The Plottie index stores links and metadata only. Do not bulk-download remote images.
 
 ## Figure Manifest for QA
 
