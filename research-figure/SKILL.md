@@ -54,6 +54,7 @@ claim, source data, and target output instead of starting from a favorite plotti
 - Use `references/common-patterns.md` for reusable Python layout and encoding patterns.
 - Use `references/chart-types.md` for radar, 3D/conceptual, scatter, area, log-scale, and GridSpec patterns.
 - Use `references/tutorials.md` for end-to-end Python examples.
+- Use `references/matplotlib-gallery-reference.md` when searching bundled official Matplotlib gallery examples.
 - Use `references/r-workflow.md` for R implementation and export patterns.
 - Use `references/r-template-index.md` only when the user chooses R and provides or mentions private R templates.
 - Use `references/qa-contract.md` before final delivery or revision packages.
@@ -97,6 +98,15 @@ python scripts/search_plottie_reference.py --plot-type line --journal "Nature Ma
 ```
 
 The Plottie index stores links and metadata only. Do not bulk-download remote images.
+
+Use `scripts/search_matplotlib_gallery.py` to search the bundled official Matplotlib
+gallery code index, generated from local files under `references/code/matplotlib/`:
+
+```bash
+python scripts/search_matplotlib_gallery.py --query violin --limit 5
+python scripts/search_matplotlib_gallery.py --category statistics --show-path
+python scripts/search_matplotlib_gallery.py --api fill_between --limit 5
+```
 
 ## Figure Manifest for QA
 

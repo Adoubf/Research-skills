@@ -29,6 +29,7 @@ REQUIRED_REFERENCES = [
     "r-workflow.md",
     "r-template-index.md",
     "plottie-reference.md",
+    "matplotlib-gallery-reference.md",
 ]
 
 DATA_EXTENSIONS = {

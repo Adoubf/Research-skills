@@ -240,6 +240,8 @@ class ResearchFigureToolTests(unittest.TestCase):
             self.assertIn("research-figure/SKILL.md", names)
             self.assertFalse(any("__pycache__" in name for name in names))
             self.assertIn("research-figure/LICENSE", names)
+            self.assertIn("research-figure/scripts/search_matplotlib_gallery.py", names)
+            self.assertIn("research-figure/references/figure/matplotlib-gallery-index.jsonl", names)
             shutil.rmtree(out_dir / "research-figure")
 
     def test_pack_skill_no_zip_exports_directory(self):
