@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
-import os
 import re
 import shutil
 import sys
@@ -46,6 +45,45 @@ DATA_EXTENSIONS = {
     ".npy",
     ".npz",
 }
+
+FIGURE_CONTRACT_FIELDS = {
+    "core_conclusion": "Core conclusion",
+    "figure_archetype": "Figure archetype",
+    "target_journal_output": "Target journal/output",
+    "backend": "Backend",
+    "final_size": "Final size",
+    "panel_map": "Panel map",
+    "evidence_hierarchy": "Evidence hierarchy",
+    "statistics_needed": "Statistics needed",
+    "source_data_needed": "Source data needed",
+    "image_integrity_notes": "Image-integrity notes",
+    "reviewer_risk": "Reviewer risk",
+}
+
+QA_CHECKS = {
+    "core_conclusion": "Core conclusion",
+    "archetype": "Archetype",
+    "backend_exclusivity": "Backend exclusivity",
+    "final_size": "Final size",
+    "text_size": "Text size",
+    "panel_labels": "Panel labels",
+    "editable_text": "Editable text",
+    "font": "Font",
+    "color": "Color",
+    "legend_strategy": "Legend strategy",
+    "statistics": "Statistics",
+    "source_data": "Source data",
+    "raster_resolution": "Raster resolution",
+    "microscopy_scale": "Microscopy scale",
+    "image_integrity": "Image integrity",
+    "export_bundle": "Export bundle",
+}
+
+PASS_VALUES = {"pass", "passed", "true", "yes", "ok", "done", "n/a", "na", "not_applicable"}
+BACKENDS = {"python", "r"}
+SCRIPT_EXTENSIONS = {"python": {".py"}, "r": {".r"}}
+VECTOR_EXPORT_EXTENSIONS = {".svg"}
+SECONDARY_EXPORT_EXTENSIONS = {".pdf", ".tif", ".tiff", ".png"}
 
 EXCLUDED_NAMES = {
     ".DS_Store",
@@ -167,9 +205,24 @@ def validate_project(project_dir: Path) -> CheckResult:
         result.errors.append(f"Project directory does not exist: {project_dir}")
         return result
 
-    data_dir = project_dir / "data"
+    manifest_data: dict[str, object] | None = None
+    manifest = project_dir / "manifest.json"
+    if manifest.is_file():
+        manifest_data = load_json_manifest(manifest, result)
+        if manifest_data is not None:
+            validate_manifest_data(manifest, manifest_data, result)
+    elif not (project_dir / "manifest.yaml").is_file() and not (project_dir / "manifest.yml").is_file():
+        result.warnings.append(
+            "No manifest found. Add manifest.json, manifest.yaml, or manifest.yml for reproducible figure tasks."
+        )
+
+    data_dir_value = None
+    if isinstance(manifest_data, dict):
+        data_dir_value = manifest_data.get("data_dir")
+    data_dir = resolve_project_path(project_dir, data_dir_value or "data")
+    data_dir_label = str(data_dir_value) if data_dir_value else "data/"
     if not data_dir.is_dir():
-        result.errors.append("Missing required data directory: data/")
+        result.errors.append(f"Missing required data directory: {data_dir_label}")
     else:
         data_files = [
             p
@@ -182,37 +235,237 @@ def validate_project(project_dir: Path) -> CheckResult:
                 f"({', '.join(sorted(DATA_EXTENSIONS))})"
             )
 
-    manifest = project_dir / "manifest.json"
-    if manifest.is_file():
-        validate_manifest(manifest, result)
-    elif not (project_dir / "manifest.yaml").is_file() and not (project_dir / "manifest.yml").is_file():
-        result.warnings.append(
-            "No manifest found. Add manifest.json, manifest.yaml, or manifest.yml for reproducible figure tasks."
-        )
-
     return result
 
 
-def validate_manifest(manifest: Path, result: CheckResult) -> None:
+def load_json_manifest(manifest: Path, result: CheckResult) -> dict[str, object] | None:
     try:
         data = json.loads(read_text(manifest))
     except json.JSONDecodeError as exc:
         result.errors.append(f"Invalid JSON manifest: {manifest.name}: {exc}")
-        return
+        return None
     if not isinstance(data, dict):
         result.errors.append(f"{manifest.name} must contain a JSON object")
+        return None
+    return data
+
+
+def validate_manifest(manifest: Path, result: CheckResult) -> None:
+    data = load_json_manifest(manifest, result)
+    if data is None:
         return
+    validate_manifest_data(manifest, data, result)
+
+
+def validate_manifest_data(manifest: Path, data: dict[str, object], result: CheckResult) -> None:
     for key in ("backend", "data_dir"):
         if key not in data:
             result.warnings.append(f"{manifest.name} is missing recommended key: {key}")
     backend = data.get("backend")
-    if backend is not None and backend not in {"python", "r", "Python", "R"}:
+    if backend is not None and normalize_backend(backend) not in BACKENDS:
         result.errors.append("manifest backend must be either 'python' or 'r'")
     data_dir = data.get("data_dir")
     if data_dir:
-        resolved = (manifest.parent / str(data_dir)).resolve()
+        resolved = resolve_project_path(manifest.parent, data_dir)
+        if Path(str(data_dir)).is_absolute():
+            result.warnings.append("manifest data_dir is absolute; prefer a project-relative path")
         if not resolved.is_dir():
             result.errors.append(f"manifest data_dir does not exist: {data_dir}")
+
+
+def validate_figure(project_dir: Path) -> CheckResult:
+    project_dir = project_dir.resolve()
+    result = validate_project(project_dir)
+    manifest = project_dir / "manifest.json"
+    if not manifest.is_file():
+        result.errors.append("Figure validation requires manifest.json")
+        return result
+
+    data = load_json_manifest(manifest, result)
+    if data is None:
+        return result
+
+    backend = normalize_backend(data.get("backend"))
+    if backend not in BACKENDS:
+        result.errors.append("Figure manifest must set backend to 'python' or 'r'")
+
+    validate_figure_contract(data, result)
+    validate_plot_script(project_dir, data, backend, result)
+    validate_exports(project_dir, data, result)
+    validate_qa_checklist(data, result)
+    validate_conditional_qa_details(data, result)
+    return result
+
+
+def validate_figure_contract(data: dict[str, object], result: CheckResult) -> None:
+    contract = data.get("figure_contract") or data.get("contract")
+    if not isinstance(contract, dict):
+        result.errors.append("manifest must include a figure_contract object")
+        return
+    for key, label in FIGURE_CONTRACT_FIELDS.items():
+        value = contract.get(key)
+        if is_blank(value):
+            result.errors.append(f"figure_contract missing required field: {key} ({label})")
+    panel_map = contract.get("panel_map")
+    if not isinstance(panel_map, dict) or not panel_map:
+        result.errors.append("figure_contract.panel_map must be a non-empty object")
+    evidence = contract.get("evidence_hierarchy")
+    if not isinstance(evidence, dict) or not evidence:
+        result.errors.append("figure_contract.evidence_hierarchy must be a non-empty object")
+
+
+def validate_plot_script(
+    project_dir: Path,
+    data: dict[str, object],
+    backend: str | None,
+    result: CheckResult,
+) -> None:
+    script_value = data.get("script") or data.get("plot_script")
+    if is_blank(script_value):
+        result.errors.append("manifest must include script or plot_script")
+        return
+
+    script_path = resolve_project_path(project_dir, script_value)
+    if Path(str(script_value)).is_absolute():
+        result.warnings.append("manifest script path is absolute; prefer a project-relative path")
+    if not script_path.is_file():
+        result.errors.append(f"plot script does not exist: {script_value}")
+        return
+
+    if backend in SCRIPT_EXTENSIONS:
+        suffix = script_path.suffix.lower()
+        if suffix not in SCRIPT_EXTENSIONS[backend]:
+            expected = ", ".join(sorted(SCRIPT_EXTENSIONS[backend]))
+            result.errors.append(
+                f"plot script extension {script_path.suffix!r} does not match backend {backend}; expected {expected}"
+            )
+
+    text = read_text(script_path)
+    if backend == "python":
+        if "svg.fonttype" not in text:
+            result.errors.append("Python plot script must set svg.fonttype='none' for editable SVG text")
+        if "pdf.fonttype" not in text:
+            result.warnings.append("Python plot script should set pdf.fonttype=42 for editable PDF text")
+        if "savefig" not in text:
+            result.warnings.append("Python plot script does not appear to save figure outputs with savefig")
+    elif backend == "r":
+        lower = text.lower()
+        if "svglite" not in lower:
+            result.errors.append("R plot script must use svglite for editable SVG export")
+        if "cairo_pdf" not in lower and "pdf(" not in lower:
+            result.warnings.append("R plot script should export PDF with cairo_pdf or pdf")
+        if "agg_tiff" not in lower and "tiff(" not in lower:
+            result.warnings.append("R plot script should export a TIFF preview with ragg::agg_tiff or tiff")
+
+
+def validate_exports(project_dir: Path, data: dict[str, object], result: CheckResult) -> None:
+    export_values = flatten_exports(data.get("exports") or data.get("output_files"))
+    if not export_values:
+        result.errors.append("manifest must include exports or output_files")
+        return
+
+    suffixes: set[str] = set()
+    for value in export_values:
+        export_path = resolve_project_path(project_dir, value)
+        if Path(str(value)).is_absolute():
+            result.warnings.append(f"export path is absolute; prefer project-relative path: {value}")
+        suffix = export_path.suffix.lower()
+        suffixes.add(suffix)
+        if not export_path.is_file():
+            result.errors.append(f"listed export does not exist: {value}")
+            continue
+        if suffix == ".svg":
+            inspect_svg_export(export_path, result)
+
+    if not suffixes.intersection(VECTOR_EXPORT_EXTENSIONS):
+        result.errors.append("export bundle must include an SVG primary output")
+    if ".pdf" not in suffixes:
+        result.warnings.append("export bundle should include a PDF output")
+    if not suffixes.intersection({".tif", ".tiff", ".png"}):
+        result.warnings.append("export bundle should include a TIFF or PNG preview")
+
+
+def inspect_svg_export(svg_path: Path, result: CheckResult) -> None:
+    text = read_text(svg_path)
+    if "<text" not in text:
+        result.warnings.append(f"SVG has no <text> nodes; verify text was not outlined: {svg_path.name}")
+    if "<svg" not in text:
+        result.errors.append(f"SVG export does not look like an SVG file: {svg_path.name}")
+
+
+def validate_qa_checklist(data: dict[str, object], result: CheckResult) -> None:
+    qa = data.get("qa")
+    if not isinstance(qa, dict):
+        result.errors.append("manifest must include a qa object based on references/qa-contract.md")
+        return
+    for key, label in QA_CHECKS.items():
+        if key not in qa:
+            result.errors.append(f"qa missing required check: {key} ({label})")
+            continue
+        if not is_pass_value(qa[key]):
+            result.errors.append(f"qa check did not pass: {key} ({label})")
+
+
+def validate_conditional_qa_details(data: dict[str, object], result: CheckResult) -> None:
+    if truthy(data.get("statistical_claims")) and not isinstance(data.get("statistics"), dict):
+        result.errors.append("statistical_claims=true requires a statistics object")
+    if truthy(data.get("image_panels")) and not isinstance(data.get("image_integrity"), dict):
+        result.errors.append("image_panels=true requires an image_integrity object")
+
+
+def normalize_backend(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value).strip().lower()
+
+
+def resolve_project_path(project_dir: Path, value: object) -> Path:
+    path = Path(str(value))
+    if path.is_absolute():
+        return path.resolve()
+    return (project_dir / path).resolve()
+
+
+def is_blank(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, dict, set)):
+        return len(value) == 0
+    return False
+
+
+def truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"true", "yes", "1", "y"}
+
+
+def is_pass_value(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower().replace("-", "_").replace(" ", "_") in PASS_VALUES
+
+
+def flatten_exports(exports: object) -> list[object]:
+    if exports is None:
+        return []
+    if isinstance(exports, dict):
+        values: list[object] = []
+        for value in exports.values():
+            if isinstance(value, list):
+                values.extend(value)
+            else:
+                values.append(value)
+        return [value for value in values if not is_blank(value)]
+    if isinstance(exports, list):
+        return [value for value in exports if not is_blank(value)]
+    return [exports] if not is_blank(exports) else []
 
 
 def pack_skill(skill_dir: Path, out_dir: Path, zip_output: bool = True) -> Path:
@@ -278,6 +531,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate_project_parser.add_argument("project_dir", type=Path)
 
+    validate_figure_parser = subparsers.add_parser(
+        "validate-figure", help="Validate a rendered figure project against the QA contract."
+    )
+    validate_figure_parser.add_argument("project_dir", type=Path)
+
     pack_parser = subparsers.add_parser("pack-skill", help="Copy and zip a skill package.")
     pack_parser.add_argument("skill_dir", type=Path)
     pack_parser.add_argument("--out", type=Path, default=Path("dist"))
@@ -296,6 +554,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         return 0 if result.ok else 1
     if args.command == "validate-project":
         result = validate_project(args.project_dir)
+        print_result(result)
+        return 0 if result.ok else 1
+    if args.command == "validate-figure":
+        result = validate_figure(args.project_dir)
         print_result(result)
         return 0 if result.ok else 1
     if args.command == "pack-skill":

@@ -1,281 +1,190 @@
-# Chart Types — Nature Figure Making
+# Specialized Chart Types
 
-Specialized chart patterns beyond basic bars and trends.
-Each section includes the key code pattern extracted from production scripts.
+Use this file for chart families not covered by the standard helpers in `api.md`
+or the layout patterns in `common-patterns.md`.
 
----
+## Selection Guide
+
+| Need | Use |
+|---|---|
+| Many methods across many benchmarks with heterogeneous scales | Radar / polar chart |
+| Conceptual geometry, embedding space, or mechanism illustration | Shaded sphere or 3D scatter |
+| Cumulative composition over ordered categories/time | Filled area or stacked area |
+| Values span orders of magnitude | Log-scale bar chart |
+| Positive and negative values share one axis | Custom spine at zero |
 
 ## Radar / Polar Chart
 
-Used when comparing multiple methods across many benchmarks simultaneously.
+Use radar plots only when the spokes are meaningful and numerous benchmark panels
+would be harder to compare. Normalize each spoke independently and document the
+normalization range.
 
 ```python
-import numpy as np
-import matplotlib.pyplot as plt
+def plot_radar(ax, methods, colors, spoke_labels, value_matrix,
+               spoke_ranges, display_range=(45, 90)):
+    """value_matrix shape: (n_spokes, n_methods)."""
+    import numpy as np
 
-def plot_radar(methods, colors, subtask_names, value_matrix,
-               benchmark_radii, display_range=(45, 90)):
-    """
-    Parameters
-    ----------
-    methods        : list[str]    — one curve per method
-    colors         : list[str]
-    subtask_names  : list[str]    — one spoke per subtask (may contain '\\n')
-    value_matrix   : np.ndarray  — shape (n_subtasks, n_methods)
-    benchmark_radii: dict         — {benchmark_name: [tick1, tick2, ...]} for normalization
-    display_range  : (r_min, r_max) — polar radial display window
-    """
     r_lo, r_hi = display_range
-    n_subtasks = len(subtask_names)
-    n_methods  = len(methods)
+    n_spokes, n_methods = value_matrix.shape
+    if n_spokes != len(spoke_labels):
+        raise ValueError("spoke_labels must match value_matrix rows")
+    if n_methods != len(methods):
+        raise ValueError("methods must match value_matrix columns")
 
-    fig = plt.figure(figsize=(12, 10))
-    ax  = fig.add_subplot(111, projection='polar')
+    angles = np.linspace(2 * np.pi, 0, n_spokes, endpoint=False)
+    closed_angles = np.append(angles, angles[0])
 
-    # Evenly spaced angles, clockwise from top
-    angles = np.linspace(2 * np.pi, 0, n_subtasks, endpoint=False)
-    angles_closed = np.append(angles, angles[0])
-
-    def _normalize(val, bench):
-        radii_list = benchmark_radii.get(bench, [0, 100])
-        span = max(radii_list) - min(radii_list)
-        if span <= 0:
+    def normalize(value, label):
+        lo, hi = spoke_ranges.get(label, (0, 100))
+        if hi <= lo:
             return (r_lo + r_hi) / 2
-        frac = np.clip((val - min(radii_list)) / span, 0, 1)
+        frac = np.clip((value - lo) / (hi - lo), 0, 1)
         return r_lo + (r_hi - r_lo) * frac
 
-    subtask_benchmarks = [s.split('\\n', 1)[-1] if '\\n' in s else s
-                          for s in subtask_names]
+    for j, (method, color) in enumerate(zip(methods, colors)):
+        vals = np.array([normalize(value_matrix[i, j], spoke_labels[i])
+                         for i in range(n_spokes)])
+        closed_vals = np.append(vals, vals[0])
+        ax.plot(closed_angles, closed_vals, color=color, lw=1.2, label=method)
+        ax.fill(closed_angles, closed_vals, color=color, alpha=0.05)
+        ax.scatter(angles, vals, color=color, s=10, zorder=5)
 
-    # Draw data polygons
-    for m in range(n_methods):
-        norm_vals = np.array([_normalize(value_matrix[i, m], subtask_benchmarks[i])
-                              for i in range(n_subtasks)])
-        closed = np.append(norm_vals, norm_vals[0])
-        ax.plot(angles_closed, closed, color=colors[m], lw=2, label=methods[m])
-        ax.fill(angles_closed, closed, color=colors[m], alpha=0.05)
-        ax.scatter(angles, norm_vals, color=colors[m], s=18, zorder=5)
-
-    # Style
     ax.set_ylim(r_lo, r_hi)
-    ax.set_theta_zero_location('N')
+    ax.set_theta_zero_location("N")
+    ax.grid(False)
     for spine in ax.spines.values():
         spine.set_visible(False)
-    ax.grid(False)
-
-    # Outer boundary ring
-    ax.plot(angles_closed, np.full_like(angles_closed, r_hi),
-            color='k', lw=0.8, zorder=4)
-
-    # Radial spokes
-    for a in angles:
-        ax.plot([a, a], [r_lo, r_hi], color='gray', lw=0.5, zorder=4)
-
-    # Benchmark-level contour polygons
-    max_levels = max(len(v) for v in benchmark_radii.values())
-    for k in range(max_levels):
-        disp = np.array([_normalize(benchmark_radii.get(b, [0,100])[
-                            min(k, len(benchmark_radii.get(b,[0,100]))-1)], b)
-                         for b in subtask_benchmarks])
-        ax.plot(angles_closed, np.append(disp, disp[0]),
-                color='k', lw=0.6, zorder=4)
-
-    ax.set_yticks([r_hi])
-    ax.set_yticklabels([])
+    for angle in angles:
+        ax.plot([angle, angle], [r_lo, r_hi], color="#A8A8A8", lw=0.4)
+    ax.plot(closed_angles, np.full_like(closed_angles, r_hi), color="black", lw=0.6)
     ax.set_xticks(angles)
     ax.set_xticklabels([])
+    ax.set_yticklabels([])
 
-    # Spoke labels (outside outer ring)
-    for angle, label in zip(angles, subtask_names):
-        r_label = r_hi + 8 + 10 * abs(np.sin(angle))
-        ax.text(angle, r_label, label, fontsize=14,
-                ha='center', va='center',
-                transform=ax.transData, clip_on=False)
-
-    ax.legend(loc='upper right', bbox_to_anchor=(1.40, 0.05),
-              fontsize=15, frameon=False)
-    return fig, ax
+    for angle, label in zip(angles, spoke_labels):
+        ax.text(angle, r_hi + 6, label, ha="center", va="center", fontsize=6)
 ```
 
-**Key settings:**
-- `ax.set_theta_zero_location('N')` — top-start convention
-- Remove all default spines/grid; draw custom spokes + contour polygons manually
-- Normalize each spoke independently using per-benchmark tick lists
-- Legend placed **outside** the plot at `bbox_to_anchor=(1.40, 0.05)`
+Key settings:
 
----
+- Start at the top with `set_theta_zero_location("N")`.
+- Remove default grid/spines and draw custom spokes.
+- Put the legend outside the polar data region.
+- Do not use a radar plot for fewer than about five spokes unless the circular metaphor is scientifically meaningful.
 
-## 3D Sphere / Conceptual Illustration
+## 3D / Conceptual Illustration
 
-Used for geometric conceptual diagrams (e.g., embedding space visualization).
+Use for geometric conceptual diagrams, not for precise quantitative comparison.
+If the plot must support a quantitative claim, pair it with a 2D quantification panel.
 
 ```python
-import numpy as np
-import matplotlib.pyplot as plt
+def draw_shaded_sphere(ax, light_dir=(-0.5, 0.5, 0.8), resolution=384,
+                       alpha=1.0, extent=(-1, 1, -1, 1)):
+    """Draw a 2D shaded disk that reads as a sphere."""
+    import numpy as np
 
-def draw_shaded_sphere(ax, light_dir=(-0.5, 0.5, 0.8),
-                       resolution=512, alpha=1.0,
-                       extent=(-1, 1, -1, 1)):
-    """Draw a 2D shaded disk that mimics a 3D sphere using ray-casting."""
     xs = np.linspace(extent[0], extent[1], resolution)
     ys = np.linspace(extent[2], extent[3], resolution)
     x, y = np.meshgrid(xs, ys)
-    r2 = x**2 + y**2
+    r2 = x ** 2 + y ** 2
     mask = r2 <= 1.0
 
     z = np.zeros_like(x)
     z[mask] = np.sqrt(1.0 - r2[mask])
+    normals = np.stack([x, y, z], axis=-1)
+    normals /= np.linalg.norm(normals, axis=-1, keepdims=True) + 1e-9
 
-    # Surface normals
-    nx, ny, nz = x.copy(), y.copy(), z.copy()
-    nrm = np.sqrt(nx**2 + ny**2 + nz**2) + 1e-6
-    nx, ny, nz = nx/nrm, ny/nrm, nz/nrm
+    light = np.array(light_dir, dtype=float)
+    light /= np.linalg.norm(light)
+    intensity = np.maximum(0, normals @ light)
 
-    # Lambertian shading
-    ld = np.array(light_dir, dtype=float)
-    ld /= np.linalg.norm(ld)
-    intensity = np.maximum(0, nx*ld[0] + ny*ld[1] + nz*ld[2])
-
-    img = np.ones_like(x)
-    img[mask] = np.clip(0.2 + 0.9 * intensity[mask], 0, 1)
-
-    ax.imshow(img, cmap='gray',
-              extent=list(extent),
-              vmin=0, vmax=1, alpha=alpha)
+    image = np.ones_like(x)
+    image[mask] = np.clip(0.2 + 0.9 * intensity[mask], 0, 1)
+    ax.imshow(image, cmap="gray", extent=list(extent), vmin=0, vmax=1, alpha=alpha)
     ax.set_axis_off()
-    return ax
+```
 
-
-def plot_3d_scatter_with_arrows(ax, points, grad_vectors,
-                                point_color='#0c2458', arrow_color='#b64342'):
-    """3D scatter plot with gradient arrow annotations."""
-    from mpl_toolkits.mplot3d import proj3d
+```python
+def plot_3d_arrows(ax, points, vectors, point_color="#0F4D92",
+                   arrow_color="#B64342"):
+    """3D scatter with vector arrows for conceptual directionality."""
     from matplotlib.patches import FancyArrowPatch
+    from mpl_toolkits.mplot3d import proj3d
+    import numpy as np
 
     class Arrow3D(FancyArrowPatch):
         def __init__(self, xs, ys, zs, *args, **kwargs):
-            super().__init__((0,0), (0,0), *args, **kwargs)
+            super().__init__((0, 0), (0, 0), *args, **kwargs)
             self._verts3d = xs, ys, zs
+
         def do_3d_projection(self, renderer=None):
             xs, ys, zs = proj3d.proj_transform(*self._verts3d, self.axes.get_proj())
             self.set_positions((xs[0], ys[0]), (xs[1], ys[1]))
             return np.min(zs)
 
     ax.scatter(points[:, 0], points[:, 1], points[:, 2],
-               s=80, color=point_color, alpha=0.5)
-    for p, g in zip(points, grad_vectors):
-        arrow = Arrow3D([p[0], p[0]+g[0]], [p[1], p[1]+g[1]], [p[2], p[2]+g[2]],
-                        mutation_scale=16, lw=4, arrowstyle='->',
-                        color=arrow_color, alpha=0.8)
+               s=30, color=point_color, alpha=0.55)
+    for point, vec in zip(points, vectors):
+        arrow = Arrow3D(
+            [point[0], point[0] + vec[0]],
+            [point[1], point[1] + vec[1]],
+            [point[2], point[2] + vec[2]],
+            mutation_scale=10, lw=1.5, arrowstyle="->",
+            color=arrow_color, alpha=0.8,
+        )
         ax.add_artist(arrow)
-
-    # Clean 3D axes
     ax.grid(False)
-    ax.xaxis.pane.set_visible(False)
-    ax.yaxis.pane.set_visible(False)
-    ax.zaxis.pane.set_visible(False)
     ax.set_xticks([])
     ax.set_yticks([])
     ax.set_zticks([])
 ```
 
----
+## Filled or Stacked Area
 
-## Scatter Plot with Color-Coded Clusters
-
-```python
-def make_scatter(ax, x, y, labels_or_colors,
-                 size=50, alpha=0.7, edgecolors='none'):
-    """Single or multi-cluster scatter."""
-    import numpy as np
-    ax.scatter(x, y, c=labels_or_colors, s=size,
-               alpha=alpha, edgecolors=edgecolors)
-    ax.set_axis_off()   # for conceptual diagrams; remove for data plots
-```
-
----
-
-## Fill-Between Area Chart (Stacked trend)
-
-Used for cumulative publication counts, stacked contributions, etc.
+Use for cumulative composition or ordered contributions. Add hatches when adjacent
+fills have similar luminance or print safety matters.
 
 ```python
-# Filled area (stacked) with hatch for print safety
-ax.fill_between(x, 0, y_bottom,
-                color='#ffa8a6', label='Category A')
-ax.fill_between(x, 0, y_top,
-                color='#9BC8FA',
-                hatch='///',               # hatch for grayscale print
-                edgecolor='black',
-                label='Category B')
-# Erase border artifacts
-ax.fill_between(x, 0, y_top,
-                facecolor='none',
-                edgecolor='white',
-                linewidth=2)
-
-# Overlay the trend line for exact values
-ax.plot(x, y_top, lw=3, color='#13457E')
-ax.plot(x, y_bottom, lw=3, color='#850c0a')
+ax.fill_between(x, 0, y_bottom, color="#F6CFCB", label="Category A")
+ax.fill_between(x, y_bottom, y_top, color="#9BC8FA",
+                hatch="///", edgecolor="black", linewidth=0.3,
+                label="Category B")
+ax.plot(x, y_top, lw=1.2, color="#0F4D92")
 ```
 
----
+If exact values matter, overlay a boundary line. If category labels are stable and
+large enough, use direct labels inside the filled regions instead of a large legend.
 
-## Log-Scale Bar Chart
+## Log-Scale Bars
+
+Use when values span orders of magnitude. Annotate in multiplicative space.
 
 ```python
-ax.set_yscale('log')
-ymin, ymax = ax.get_ylim()
-ax.set_ylim(ymin, ymax * 20)   # expand top for annotations
-
-# Annotate values above bars
-for i, val in enumerate(values):
-    ax.text(i, val * 1.1, f'{val:.3f}',
-            ha='center', va='bottom', fontsize=16)
+ax.set_yscale("log")
+ax.bar(x, values, color=colors)
+for i, value in enumerate(values):
+    ax.text(i, value * 1.15, f"{value:.2g}", ha="center", va="bottom", fontsize=6)
 ```
 
----
+Do not use log scale for values that can be zero or negative unless the transform
+and excluded values are explicitly documented.
 
-## GridSpec Multi-Panel Layout
+## Custom Zero Spine
+
+Use for signed bars or effects where the zero line is the comparison reference.
 
 ```python
-from matplotlib import gridspec
-
-# 2-row, 4-column layout
-fig = plt.figure(figsize=(36, 12))
-gs = gridspec.GridSpec(2, 4)
-
-ax_top_left  = fig.add_subplot(gs[0, 0])
-ax_top_right = fig.add_subplot(gs[0, 1:3])   # span columns 1-2
-ax_legend    = fig.add_subplot(gs[0, 3])     # legend panel
-ax_bottom    = fig.add_subplot(gs[1, :])     # full-width bottom
+ax.spines["bottom"].set_position(("data", 0))
+ax.xaxis.set_ticks_position("bottom")
+ax.axhline(0, color="#767676", lw=0.8)
 ```
 
----
+Keep positive and negative encodings symmetric unless the scientific scale is asymmetric.
 
-## Scientific Notation on Y-Axis
+## Related Files
 
-```python
-ax.ticklabel_format(axis='y', style='sci', scilimits=(0, 0))
-```
-
----
-
-## Custom Spine Positioning
-
-```python
-# Move bottom spine to y=0 (for negative values)
-ax.spines['bottom'].set_position(('data', 0))
-ax.xaxis.set_ticks_position('bottom')
-ax.spines['left'].set_bounds(0, y_max)
-```
-
----
-
-## Related files
-
-- [SKILL.md](../SKILL.md) — When to use this skill
-- [api.md](api.md) — PALETTE and core helper signatures
-- [common-patterns.md](common-patterns.md) — Bar, trend, and layout patterns
-- [design-theory.md](design-theory.md) — Rationale and color theory
-- [tutorials.md](tutorials.md) — Full end-to-end walkthroughs
+- [api.md](api.md) - Python helper constants and function contracts
+- [common-patterns.md](common-patterns.md) - standard layout and encoding patterns
+- [design-theory.md](design-theory.md) - design decision rationale
+- [tutorials.md](tutorials.md) - end-to-end Python examples

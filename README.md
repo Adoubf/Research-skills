@@ -12,6 +12,7 @@ Use `uv` for Python commands:
 
 ```bash
 uv run research-figure-tool validate-skill research-figure
+uv run research-figure-tool validate-figure <project-dir>
 uv run research-figure-tool pack-skill research-figure --out dist
 ```
 

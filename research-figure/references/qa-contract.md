@@ -36,6 +36,30 @@ submission. The values below are conservative defaults for Nature-family style w
 | Image integrity | Crop, contrast, pseudo-color, stitching, reuse, and raw-file provenance are recorded |
 | Export bundle | Script, source data, SVG, PDF, TIFF/PNG preview, and QA notes are delivered together when requested |
 
+For final projects, mirror this checklist in `manifest.json` under `qa` using these
+exact keys and values such as `"pass"` or `"n/a"`:
+
+```json
+{
+  "core_conclusion": "pass",
+  "archetype": "pass",
+  "backend_exclusivity": "pass",
+  "final_size": "pass",
+  "text_size": "pass",
+  "panel_labels": "pass",
+  "editable_text": "pass",
+  "font": "pass",
+  "color": "pass",
+  "legend_strategy": "pass",
+  "statistics": "pass",
+  "source_data": "pass",
+  "raster_resolution": "n/a",
+  "microscopy_scale": "n/a",
+  "image_integrity": "n/a",
+  "export_bundle": "pass"
+}
+```
+
 ## Statistics legend minimum
 
 For each quantitative panel, capture:

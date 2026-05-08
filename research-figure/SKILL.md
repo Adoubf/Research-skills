@@ -42,6 +42,7 @@ claim, source data, and target output instead of starting from a favorite plotti
    - Read `references/qa-contract.md`.
    - Check backend exclusivity, final size, text readability, panel labels, editable text, statistics,
      source-data traceability, raster resolution, image integrity, and export bundle completeness.
+   - When a project has been rendered, create or update `manifest.json` and run `validate-figure`.
 
 ## Reference Selection
 
@@ -70,7 +71,77 @@ Use `scripts/research_figure_tool.py` for deterministic repository tasks:
 ```bash
 uv run python research-figure/scripts/research_figure_tool.py validate-skill research-figure
 uv run python research-figure/scripts/research_figure_tool.py validate-project <project-dir>
+uv run python research-figure/scripts/research_figure_tool.py validate-figure <project-dir>
 uv run python research-figure/scripts/research_figure_tool.py pack-skill research-figure --out dist
 ```
 
-The script validates project data directories and skill package structure. It does not call any LLM API.
+The script validates project data directories, rendered figure QA metadata, export bundles, and skill package structure. It does not call any LLM API.
+
+## Figure Manifest for QA
+
+For final figure projects, write `manifest.json` in the project root. Keep paths project-relative.
+The `validate-figure` command checks this file against the figure contract and QA contract.
+
+```json
+{
+  "backend": "python",
+  "data_dir": "data",
+  "script": "scripts/plot_figure.py",
+  "exports": {
+    "svg": "figures/figure.svg",
+    "pdf": "figures/figure.pdf",
+    "preview": "figures/figure.tiff"
+  },
+  "figure_contract": {
+    "core_conclusion": "Treatment X reduces Y by restoring Z.",
+    "figure_archetype": "quantitative grid",
+    "target_journal_output": "Nature-family double-column figure",
+    "backend": "Python",
+    "final_size": "183 mm x 120 mm",
+    "panel_map": {
+      "a": "Primary comparison",
+      "b": "Validation analysis"
+    },
+    "evidence_hierarchy": {
+      "hero evidence": "Panel a",
+      "validation evidence": "Panel b",
+      "controls/robustness": "Source data and statistics notes"
+    },
+    "statistics_needed": "n, center, spread, test, correction",
+    "source_data_needed": "data/source.csv",
+    "image_integrity_notes": "No image panels",
+    "reviewer_risk": "Axis comparability and sample-size visibility"
+  },
+  "qa": {
+    "core_conclusion": "pass",
+    "archetype": "pass",
+    "backend_exclusivity": "pass",
+    "final_size": "pass",
+    "text_size": "pass",
+    "panel_labels": "pass",
+    "editable_text": "pass",
+    "font": "pass",
+    "color": "pass",
+    "legend_strategy": "pass",
+    "statistics": "pass",
+    "source_data": "pass",
+    "raster_resolution": "n/a",
+    "microscopy_scale": "n/a",
+    "image_integrity": "n/a",
+    "export_bundle": "pass"
+  },
+  "statistical_claims": true,
+  "statistics": {
+    "n definition": "Biological replicates per group",
+    "center statistic": "Mean",
+    "spread/interval": "95% CI",
+    "test": "Two-sided test",
+    "source-data file": "data/source.csv"
+  },
+  "image_panels": false
+}
+```
+
+`validate-figure` enforces the presence of `figure_contract`, all QA checks from
+`references/qa-contract.md`, backend-matching script extensions, SVG primary export,
+and backend-specific editable-text export settings.

@@ -79,6 +79,23 @@ save_pub_r <- function(plot, filename, width_mm = 183, height_mm = 120, dpi = 60
 }
 ```
 
+For final projects, record these paths in `manifest.json` and set:
+
+```json
+{
+  "backend": "r",
+  "script": "scripts/plot_figure.R",
+  "exports": {
+    "svg": "figures/figure.svg",
+    "pdf": "figures/figure.pdf",
+    "preview": "figures/figure.tiff"
+  }
+}
+```
+
+`validate-figure` expects an R backend script to use a `.R` or `.r` extension and
+to export SVG with `svglite`.
+
 ## Panel labels in R
 
 Use patchwork tags for most multi-panel figures:
@@ -133,17 +150,22 @@ p_img <- ggplot(img_df, aes(x, y, fill = intensity)) +
 ## ComplexHeatmap export
 
 `ComplexHeatmap` objects are grid objects, not ggplot objects. Export them by opening
-the graphics device, drawing, then closing it.
+the graphics device, drawing, then closing it. Keep the same SVG/PDF/TIFF bundle
+contract used by `save_pub_r()`.
 
 ```r
 library(ComplexHeatmap)
 library(circlize)
 
-pdf("heatmap.pdf", width = 7.2, height = 4.8, family = "Arial")
+svglite::svglite("heatmap.svg", width = 7.2, height = 4.8)
 draw(ht, heatmap_legend_side = "right", annotation_legend_side = "right")
 dev.off()
 
-svglite::svglite("heatmap.svg", width = 7.2, height = 4.8)
+grDevices::cairo_pdf("heatmap.pdf", width = 7.2, height = 4.8, family = "Arial")
+draw(ht, heatmap_legend_side = "right", annotation_legend_side = "right")
+dev.off()
+
+ragg::agg_tiff("heatmap.tiff", width = 7.2, height = 4.8, units = "in", res = 600)
 draw(ht, heatmap_legend_side = "right", annotation_legend_side = "right")
 dev.off()
 ```

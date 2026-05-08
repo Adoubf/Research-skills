@@ -1,305 +1,119 @@
-# Common Patterns — Nature Figure Making
+# Common Patterns - Nature Figure Making
 
-Reusable layout and encoding patterns used across publication-grade scripts.
+Use this file after the figure contract is set and Python has been selected.
+It is a pattern index, not a full tutorial. For helper implementations, use
+`api.md`. For rationale, use `design-theory.md`.
 
----
+## Pattern Selection
 
-## Pattern 1: Ultra-wide multi-metric bar panel
+| Need | Pattern |
+|---|---|
+| 3-4 metrics across many methods | Ultra-wide multi-metric bars |
+| Data panels need a large legend | Dedicated legend axis |
+| Method names already appear in legend | Hide categorical x ticks |
+| Values occupy a narrow numerical band | Tighten y-axis to data range |
+| Ablation variants of one method | Alpha-graduated single hue |
+| Print-safe bars or areas | Add hatch encoding |
+| Same methods across panels | Semantic color mapping |
+| Dense repeated categorical regions | Direct labels inside regions |
+| Mechanism or workflow leads the figure | Schematic hero + quant row |
+| Microscopy or fluorescence plates | Dark image plate grid |
+| Clinical longitudinal/effect/summary figure | Clinical triptych |
+| One panel carries the central evidence | Asymmetric hero layout |
 
-For 3–4 metrics compared across many methods, use a wide canvas so bars and labels don't crowd.
+## Layout Patterns
+
+### Ultra-wide multi-metric bars
+
+Use when several metrics compare the same methods and labels would crowd at
+journal width.
 
 ```python
-fig = plt.figure(figsize=(45, 12))   # or (28, 6) for fewer metrics
-gs = gridspec.GridSpec(1, n_metrics)
+fig = plt.figure(figsize=(28, 6))
+gs = fig.add_gridspec(1, len(metrics) + 1, width_ratios=[1] * len(metrics) + [0.55])
 
 for i, metric in enumerate(metrics):
-    ax = fig.add_subplot(gs[i])
-    ax.bar(x, values[metric], color=colors, ...)
-    ax.set_ylabel(metric, fontsize=54, labelpad=12)
+    ax = fig.add_subplot(gs[0, i])
+    bars = ax.bar(x, values[metric], color=colors, label=methods)
+    ax.set_ylabel(metric)
     ax.set_xticks([])
 
-# Last panel: legend only
-ax_leg = fig.add_subplot(gs[-1])
-ax_leg.legend(handles, labels, fontsize=38, loc='center', frameon=False)
+ax_leg = fig.add_subplot(gs[0, -1])
+ax_leg.legend(*axes[0].get_legend_handles_labels(), loc="center", frameon=False)
 ax_leg.set_axis_off()
-
-fig.tight_layout(pad=2)
 ```
 
-**Rule**: Width often 3–4× height. Allows left-to-right narrative scanning.
+Keep the figure wide enough for left-to-right scanning. For final manuscript pages,
+convert slide-scale font sizes back to the target final-size range.
 
----
+### Dedicated legend axis
 
-## Pattern 2: Dedicated legend panel
-
-When the legend is large, give it its own axis so data panels stay clean.
+Use when a legend would cover data or repeat across panels.
 
 ```python
-fig, axes = plt.subplots(1, n_data + 1, figsize=(...))
-
-for i, ax in enumerate(axes[:-1]):
-    bars = ax.bar(...)
-    if i == 0:
-        handles, labels = ax.get_legend_handles_labels()
-
-# Legend-only panel
-axes[-1].legend(handles, labels, fontsize=28, loc='center', frameon=False)
-axes[-1].set_axis_off()
+handles, labels = ax_main.get_legend_handles_labels()
+ax_legend.legend(handles, labels, loc="center", frameon=False)
+ax_legend.set_axis_off()
 ```
 
----
+Prefer one shared legend strip or side axis over repeated legends.
 
-## Pattern 3: Categorical bars without x-tick labels
+### Schematic hero + quant row
 
-When methods are named in the legend, hide x-ticks entirely.
-
-```python
-ax.set_xticks([])        # removes ticks and labels
-# Alternatively:
-ax.set_xticklabels([])   # keeps tick marks, removes labels
-```
-
----
-
-## Pattern 4: Dynamic y-axis tightening
-
-Never use 0–100 when all values are in 80–95.
-
-```python
-margin = (values.max() - values.min()) * 0.1   # 10% padding
-ax.set_ylim([values.min() - margin, values.max() + margin])
-
-# Manual ticks at clean round numbers
-ax.set_yticks([0.75, 0.80, 0.85, 0.90])
-ax.tick_params(axis='y', labelsize=36, length=10, width=2)
-```
-
----
-
-## Pattern 5: Alpha-graduated ablation bars (same color, varying opacity)
-
-```python
-import numpy as np
-
-blue_rgb = (0.215686, 0.458824, 0.729412)   # #3775BA as float tuple
-n_ablations = len(ablation_configs)
-alphas = np.linspace(0.2, 1.0, n_ablations)
-colors = [(blue_rgb[0], blue_rgb[1], blue_rgb[2], a) for a in alphas]
-# Full method → alpha=1.0, most ablated → alpha=0.2
-```
-
----
-
-## Pattern 6: Hatch encoding for print-safe grayscale
-
-Add hatching so bars remain distinct when printed in black-and-white.
-
-```python
-hatches = ['/', '\\\\', '.', 'x', 'o', '+']
-for bar_container, hatch in zip(grouped_bars, hatches):
-    for patch in bar_container:
-        patch.set_hatch(hatch)
-        patch.set_edgecolor('black')
-        patch.set_linewidth(1.5)
-```
-
----
-
-## Pattern 7: Semantic or family color mapping
-
-Always map colors consistently across all panels in a figure:
-
-```python
-method_colors = {
-    'ResNet1d18': '#484878',   # baseline_dark
-    'ResNet1d34': '#7884B4',   # baseline_mid
-    'ECGFounder': '#B4C0E4',   # baseline_soft
-    'CSFM-Tiny':  '#E4E4F0',   # ours_tiny
-    'CSFM-Base':  '#E4CCD8',   # ours_base
-    'CSFM-Large': '#F0C0CC',   # ours_large
-}
-colors = [method_colors[m] for m in methods]
-```
-
-Prefer coherent hue families over alternating saturated blue/green/red just because categories differ.
-Green and red should usually be reserved for **directional annotations**, not primary series identity:
-
-```python
-ax.scatter(x_gain, y_gain, marker='^', color='#2E9E44', s=90, zorder=6)  # improvement
-ax.scatter(x_drop, y_drop, marker='v', color='#E53935', s=90, zorder=6)  # degradation
-```
-
----
-
-## Pattern 8: In-bar text with luminance-aware color
-
-```python
-def annotate_bars(ax, bars, colors, fmt='{:.2f}', fontsize=32, offset=-0.10):
-    for bar, color in zip(bars, colors):
-        c = color.lstrip('#')
-        r, g, b = int(c[0:2],16)/255, int(c[2:4],16)/255, int(c[4:6],16)/255
-        lum = 0.299*r + 0.587*g + 0.114*b
-        textcolor = 'white' if lum < 0.5 else 'black'
-        value = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2,
-                value + offset,
-                fmt.format(value),
-                ha='center', va='bottom',
-                fontsize=fontsize, color=textcolor)
-```
-
----
-
-## Pattern 9: Fill-between trend with hatch (print-safe)
-
-```python
-ax.fill_between(x, 0, cumsum_series,
-                color=fill_color,
-                hatch='\\\\\\',   # triple backslash for dense hatch
-                edgecolor='black',
-                label=label_name)
-# Visually erase the border artifacts:
-ax.fill_between(x, 0, cumsum_series,
-                facecolor='none',
-                edgecolor='white',
-                linewidth=2)
-```
-
----
-
-## Pattern 10: Annotate events on trend lines
-
-```python
-def mark_events(ax, x_labels, y_cumsum, events_dict, dy_fraction=0.1):
-    """Add labeled arrows at event dates on a trend line."""
-    x_index = {label: i for i, label in enumerate(x_labels)}
-    y_lo, y_hi = ax.get_ylim()
-    dy = dy_fraction * (y_hi - y_lo)
-    for date, label in events_dict.items():
-        if date not in x_index:
-            continue
-        i = x_index[date]
-        stars = label.count('*')
-        clean_label = label.replace('*', '')
-        y_data = y_cumsum[i]
-        ax.annotate(
-            clean_label,
-            xy=(i, y_data),
-            xytext=(i, y_data + (1 + 0.8 * stars) * dy),
-            ha='center', va='bottom', fontsize=11,
-            arrowprops=dict(arrowstyle='-|>', lw=1.3, color='black',
-                            shrinkA=0, shrinkB=0, mutation_scale=15)
-        )
-```
-
----
-
-## Pattern 11: Grouped bars across multiple datasets (grouped-within-grouped)
-
-```python
-num_methods = len(methods)
-xtick_positions = []
-
-for dataset_idx, dataset_name in enumerate(datasets):
-    x_start = dataset_idx * (num_methods + 1)   # gap of 1 between groups
-    ax.bar(
-        np.arange(num_methods) + x_start,
-        values[dataset_name],
-        color=method_colors,
-        label=methods if dataset_idx == 0 else ['_nolegend_'] * num_methods,
-    )
-    xtick_positions.append(np.mean(np.arange(num_methods)) + x_start)
-
-ax.set_xticks(xtick_positions)
-ax.set_xticklabels(datasets)
-```
-
----
-
-## Pattern 12: Schematic hero panel with supporting quant row
-
-Use when one mechanism or fabrication story needs to lead, with 2–4 smaller evidence plots below.
+Use when a mechanism, device, workflow, or fabrication story must be understood
+before the quantitative evidence.
 
 ```python
 fig = plt.figure(figsize=(7.2, 6.2))
-gs = fig.add_gridspec(
-    2, 4,
-    height_ratios=[2.2, 1.0],
-    hspace=0.18, wspace=0.28,
-)
+gs = fig.add_gridspec(2, 4, height_ratios=[2.2, 1.0], hspace=0.18, wspace=0.28)
 
-ax_top = fig.add_subplot(gs[0, :])    # hero schematic
+ax_a = fig.add_subplot(gs[0, :])    # hero schematic
 ax_b = fig.add_subplot(gs[1, 0])
 ax_c = fig.add_subplot(gs[1, 1:3])
 ax_d = fig.add_subplot(gs[1, 3])
-
-# top panel should carry the main palette and the main visual narrative
 ```
 
-Rules:
+Give the hero schematic about 45-60% of the figure height. Reuse its palette in
+the lower plots, but keep supporting panels visually quieter.
 
-- Allocate `45–60%` of total height to the hero schematic.
-- Reuse softened versions of the same colors in the lower plots.
-- Keep support plots quieter than the hero panel.
+### Dark image plate grid
 
----
-
-## Pattern 13: Dark image plate with repeated views
-
-Use for microscopy, volume rendering, or fluorescence-heavy panels.
+Use for microscopy, histology, volume rendering, or fluorescence-heavy panels.
 
 ```python
 fig = plt.figure(figsize=(7.2, 6.5))
-gs = fig.add_gridspec(3, 5, hspace=0.08, wspace=0.04)
+gs = fig.add_gridspec(n_rows, n_cols, hspace=0.08, wspace=0.04)
 
-for r in range(3):
-    for c in range(5):
+for r in range(n_rows):
+    for c in range(n_cols):
         ax = fig.add_subplot(gs[r, c])
-        ax.set_facecolor('black')
-        ax.set_xticks([])
-        ax.set_yticks([])
-        for spine in ax.spines.values():
-            spine.set_visible(False)
+        style_dark_image_ax(ax)
 ```
 
-Rules:
+Use black only inside image cells. Put channel labels, scale bars, crop guides,
+and row labels directly on the plate. Keep crop geometry and scale-bar placement
+consistent across cells.
 
-- Use black only within the image plate cells.
-- Put channel labels, scale bars and small crop guides directly on the plate.
-- Keep crop geometry and scale-bar placement consistent across the grid.
+### Clinical triptych
 
----
-
-## Pattern 14: Clinical triptych
-
-Use for outcome-over-time figures that combine trajectories, effect sizes, and summary proportions.
+Use for outcome-over-time figures that combine trajectories, effect sizes, and
+summary proportions.
 
 ```python
 fig = plt.figure(figsize=(7.2, 6.8))
-gs = fig.add_gridspec(
-    3, 3,
-    height_ratios=[1.0, 1.35, 0.8],
-    hspace=0.28, wspace=0.32,
-)
+gs = fig.add_gridspec(3, 3, height_ratios=[1.0, 1.35, 0.8], hspace=0.28, wspace=0.32)
 
 axes_top = [fig.add_subplot(gs[0, i]) for i in range(3)]
 axes_mid = [fig.add_subplot(gs[1, i]) for i in range(3)]
 axes_bot = [fig.add_subplot(gs[2, i]) for i in range(3)]
-
-# Put one shared legend strip above axes_top rather than repeating legends.
 ```
 
-Rules:
+Keep columns semantically parallel. Put the shared legend above the top row.
+Use dashed vertical reference lines and pale group bands in forest-plot rows.
 
-- Keep the three columns semantically parallel.
-- Use a dashed vertical reference line in the forest-plot row.
-- Group shading in the forest-plot row should be pale and subordinate.
+### Asymmetric hero layout
 
----
-
-## Pattern 15: Asymmetric hero panel
-
-Use when one panel is conceptually central and should dominate.
+Use when one panel carries the central evidence and should span rows or columns.
 
 ```python
 fig = plt.figure(figsize=(7.2, 5.8))
@@ -309,41 +123,118 @@ ax_a = fig.add_subplot(gs[0, :2])
 ax_b = fig.add_subplot(gs[0, 2])
 ax_c = fig.add_subplot(gs[1, :2])
 ax_d = fig.add_subplot(gs[1, 2])
-ax_e = fig.add_subplot(gs[:, 3])      # hero panel spans all rows
+ax_e = fig.add_subplot(gs[:, 3])  # hero panel
 ax_f = fig.add_subplot(gs[2, :2])
 ```
 
-Rule: do not normalize every subplot to the same size if the science does not have equal importance.
+Do not force equal subplot sizes when evidence value is unequal.
 
----
+## Encoding Patterns
 
-## Pattern 16: Direct labels inside filled regions
+### Hide categorical x ticks
 
-Use when the same categorical structure repeats and a legend would become too large.
+Use when methods are named in a legend, direct labels, or panel title.
 
 ```python
-for x_text, y_text, text, color in label_specs:
-    ax.text(
-        x_text, y_text, text,
-        color=color,
-        ha='center', va='center',
-        fontsize=9, fontweight='bold',
+ax.set_xticks([])
+```
+
+Do not remove x ticks when category order itself is a key result.
+
+### Tighten numerical axes
+
+Use when all values occupy a narrow range.
+
+```python
+span = values.max() - values.min()
+margin = max(span * 0.12, 1e-9)
+ax.set_ylim(values.min() - margin, values.max() + margin)
+```
+
+Avoid 0-100 axes for metrics that all sit around 80-95 unless zero is scientifically
+meaningful.
+
+### Alpha-graduated ablation bars
+
+Use for progressive variants of the same method.
+
+```python
+base = (0.215686, 0.458824, 0.729412)  # #3775BA
+alphas = np.linspace(0.25, 1.0, len(configs))
+colors = [(base[0], base[1], base[2], a) for a in alphas]
+```
+
+Use full opacity for the complete method and lower opacity for more ablated variants.
+
+### Hatch encoding
+
+Use when neighboring fills may collapse in grayscale or print.
+
+```python
+hatches = ["/", "\\", ".", "x", "o", "+"]
+for container, hatch in zip(bar_containers, hatches):
+    for patch in container:
+        patch.set_hatch(hatch)
+        patch.set_edgecolor("black")
+        patch.set_linewidth(0.5)
+```
+
+### Semantic color mapping
+
+Use one stable mapping for the whole figure.
+
+```python
+method_colors = {
+    "Baseline A": PALETTE_NMI_PASTEL["baseline_dark"],
+    "Baseline B": PALETTE_NMI_PASTEL["baseline_mid"],
+    "Ours small": PALETTE_NMI_PASTEL["ours_tiny"],
+    "Ours large": PALETTE_NMI_PASTEL["ours_large"],
+}
+colors = [method_colors[name] for name in methods]
+```
+
+Reserve green/red mainly for signed deltas, thresholds, warnings, or biological
+direction, not arbitrary series identity.
+
+### Direct labels inside regions
+
+Use when repeated categorical regions would require a large legend.
+
+```python
+for x_text, y_text, label, color in label_specs:
+    ax.text(x_text, y_text, label, color=color, ha="center", va="center", fontsize=7)
+```
+
+Place direct labels only in stable, visually large regions. Add a subtle white or
+black stroke only when the fill underneath changes strongly.
+
+### Event annotations on trends
+
+Use when a time series has sparse, interpretable events.
+
+```python
+x_index = {label: i for i, label in enumerate(x_labels)}
+for event_x, event_label in events.items():
+    if event_x not in x_index:
+        continue
+    i = x_index[event_x]
+    ax.annotate(
+        event_label,
+        xy=(i, y_values[i]),
+        xytext=(i, y_values[i] + dy),
+        ha="center",
+        va="bottom",
+        arrowprops={"arrowstyle": "-|>", "lw": 0.8, "color": "black"},
     )
 ```
 
-Rules:
+Keep event labels sparse. If many events compete with the trend, move them to a
+separate timeline panel.
 
-- Keep labels inside stable, visually large regions.
-- Use a small white or black stroke if the fill varies strongly underneath.
-- Prefer direct labels over a mega-legend for repeated stacked-area or phase diagrams.
+## Related Files
 
----
-
-## Related files
-
-- [SKILL.md](../SKILL.md) — When to use this skill
-- [api.md](api.md) — Helper function signatures and PALETTE
-- [design-theory.md](design-theory.md) — Rationale behind every pattern above
-- [nature-2026-observations.md](nature-2026-observations.md) — Real Nature page archetypes behind these patterns
-- [tutorials.md](tutorials.md) — End-to-end walkthroughs
-- [chart-types.md](chart-types.md) — Radar, 3D, scatter patterns
+- [api.md](api.md) - Python helper constants and function contracts
+- [design-theory.md](design-theory.md) - typography, color, layout rationale
+- [nature-2026-observations.md](nature-2026-observations.md) - Nature-family archetypes
+- [tutorials.md](tutorials.md) - end-to-end examples
+- [chart-types.md](chart-types.md) - specialized chart snippets

@@ -33,6 +33,25 @@ Image-integrity notes:
 Reviewer risk:
 ```
 
+For final projects, mirror the same contract in `manifest.json` under
+`figure_contract` using these exact snake_case keys so `validate-figure` can check it:
+
+```json
+{
+  "core_conclusion": "",
+  "figure_archetype": "",
+  "target_journal_output": "",
+  "backend": "Python or R",
+  "final_size": "",
+  "panel_map": {},
+  "evidence_hierarchy": {},
+  "statistics_needed": "",
+  "source_data_needed": "",
+  "image_integrity_notes": "",
+  "reviewer_risk": ""
+}
+```
+
 Do not start from a favorite template. Start from the conclusion, then choose the
 minimum set of panels that make the conclusion clear and defensible.
 
