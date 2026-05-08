@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import importlib.util
 import json
 import shutil
@@ -58,6 +60,156 @@ class ResearchFigureToolTests(unittest.TestCase):
 
         self.assertFalse(result.errors)
 
+    def test_validate_figure_rejects_core_qa_na(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            manifest = self.write_valid_figure_project(project_dir)
+            manifest["qa"]["statistics"] = "n/a"
+            self.write_manifest(project_dir, manifest)
+
+            result = self.tool.validate_figure(project_dir)
+
+        self.assertIn("qa check did not pass: statistics (Statistics)", result.errors)
+
+    def test_validate_figure_requires_json_manifest_not_yaml(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "data").mkdir()
+            (project_dir / "data" / "source.csv").write_text("x,y\n1,2\n", encoding="utf-8")
+            (project_dir / "manifest.yaml").write_text("backend: python\n", encoding="utf-8")
+
+            result = self.tool.validate_figure(project_dir)
+
+        self.assertIn("manifest.yaml/yml is not supported; use manifest.json", result.errors)
+        self.assertIn("Figure validation requires manifest.json", result.errors)
+
+    def test_validate_figure_rejects_missing_source_data_reference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            manifest = self.write_valid_figure_project(project_dir)
+            manifest["figure_contract"]["source_data_needed"] = "data/missing.csv"
+            self.write_manifest(project_dir, manifest)
+
+            result = self.tool.validate_figure(project_dir)
+
+        self.assertIn(
+            "figure_contract.source_data_needed does not exist: data/missing.csv",
+            result.errors,
+        )
+
+    def test_validate_figure_counts_only_existing_exports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            self.write_valid_figure_project(project_dir)
+            (project_dir / "figures" / "figure.svg").unlink()
+
+            result = self.tool.validate_figure(project_dir)
+
+        self.assertIn("listed export does not exist: figures/figure.svg", result.errors)
+        self.assertIn("export bundle must include an SVG primary output", result.errors)
+
+    def test_validate_figure_rejects_project_escape_and_absolute_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            manifest = self.write_valid_figure_project(project_dir)
+            manifest["figure_contract"]["source_data_needed"] = "../outside.csv"
+            manifest["statistics"]["source-data file"] = "/tmp/outside.csv"
+            self.write_manifest(project_dir, manifest)
+
+            result = self.tool.validate_figure(project_dir)
+
+        self.assertIn(
+            "figure_contract.source_data_needed escapes project directory: ../outside.csv",
+            result.errors,
+        )
+        self.assertIn(
+            "statistics.source-data file must be project-relative, not absolute: /tmp/outside.csv",
+            result.errors,
+        )
+
+    def test_validate_figure_rejects_python_comment_only_fonttype(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            self.write_valid_figure_project(project_dir)
+            (project_dir / "scripts" / "plot.py").write_text(
+                "import matplotlib.pyplot as plt\n"
+                "# plt.rcParams['svg.fonttype'] = 'none'\n"
+                "# plt.rcParams['pdf.fonttype'] = 42\n"
+                "fig, ax = plt.subplots()\n"
+                "fig.savefig('figures/figure.svg')\n",
+                encoding="utf-8",
+            )
+
+            result = self.tool.validate_figure(project_dir)
+
+        self.assertIn(
+            "Python plot script must set svg.fonttype='none' for editable SVG text",
+            result.errors,
+        )
+
+    def test_validate_figure_rejects_backend_script_extension_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            manifest = self.write_valid_figure_project(project_dir)
+            manifest["backend"] = "r"
+            manifest["figure_contract"]["backend"] = "R"
+            self.write_manifest(project_dir, manifest)
+
+            result = self.tool.validate_figure(project_dir)
+
+        self.assertIn(
+            "plot script extension '.py' does not match backend r; expected .r",
+            result.errors,
+        )
+
+    def test_validate_figure_accepts_complete_r_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            manifest = self.write_valid_figure_project(project_dir)
+            r_script = project_dir / "scripts" / "plot.R"
+            r_script.write_text(
+                "library(ggplot2)\n"
+                "plot <- ggplot(data.frame(x = 1, y = 2), aes(x, y)) + geom_point()\n"
+                "svglite::svglite('figures/figure.svg', width = 7, height = 4)\n"
+                "print(plot)\n"
+                "dev.off()\n"
+                "grDevices::cairo_pdf('figures/figure.pdf', width = 7, height = 4)\n"
+                "print(plot)\n"
+                "dev.off()\n"
+                "ragg::agg_tiff('figures/figure.tiff', width = 7, height = 4, units = 'in', res = 600)\n"
+                "print(plot)\n"
+                "dev.off()\n",
+                encoding="utf-8",
+            )
+            manifest["backend"] = "r"
+            manifest["script"] = "scripts/plot.R"
+            manifest["figure_contract"]["backend"] = "R"
+            self.write_manifest(project_dir, manifest)
+
+            result = self.tool.validate_figure(project_dir)
+
+        self.assertFalse(result.errors)
+
+    def test_validate_figure_rejects_r_missing_svglite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            manifest = self.write_valid_figure_project(project_dir)
+            r_script = project_dir / "scripts" / "plot.R"
+            r_script.write_text(
+                "# svglite::svglite('figures/figure.svg')\n"
+                "grDevices::cairo_pdf('figures/figure.pdf')\n"
+                "ragg::agg_tiff('figures/figure.tiff')\n",
+                encoding="utf-8",
+            )
+            manifest["backend"] = "r"
+            manifest["script"] = "scripts/plot.R"
+            manifest["figure_contract"]["backend"] = "R"
+            self.write_manifest(project_dir, manifest)
+
+            result = self.tool.validate_figure(project_dir)
+
+        self.assertIn("R plot script must use svglite for editable SVG export", result.errors)
+
     def test_validate_figure_rejects_missing_contract_and_exports(self):
         with tempfile.TemporaryDirectory() as tmp:
             project_dir = Path(tmp)
@@ -87,7 +239,46 @@ class ResearchFigureToolTests(unittest.TestCase):
                 names = zf.namelist()
             self.assertIn("research-figure/SKILL.md", names)
             self.assertFalse(any("__pycache__" in name for name in names))
+            self.assertIn("research-figure/LICENSE", names)
             shutil.rmtree(out_dir / "research-figure")
+
+    def test_pack_skill_no_zip_exports_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "dist"
+
+            output = self.tool.pack_skill(REPO_ROOT / "research-figure", out_dir, zip_output=False)
+
+            self.assertEqual(output, out_dir / "research-figure")
+            self.assertTrue((output / "SKILL.md").is_file())
+            self.assertTrue((output / "LICENSE").is_file())
+
+    def test_pack_skill_from_skill_root_excludes_nested_dist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "research-figure"
+            shutil.copytree(REPO_ROOT / "research-figure", source)
+
+            output = self.tool.pack_skill(source, source / "dist", zip_output=False)
+
+            self.assertTrue((output / "SKILL.md").is_file())
+            self.assertFalse((output / "dist").exists())
+
+    def test_main_cli_commands_return_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp) / "project"
+            project_dir.mkdir()
+            self.write_valid_figure_project(project_dir)
+            out_dir = Path(tmp) / "dist"
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                validate_skill_code = self.tool.main(["validate-skill", str(REPO_ROOT / "research-figure")])
+                validate_figure_code = self.tool.main(["validate-figure", str(project_dir)])
+                pack_code = self.tool.main(
+                    ["pack-skill", str(REPO_ROOT / "research-figure"), "--out", str(out_dir), "--no-zip"]
+                )
+
+        self.assertEqual(validate_skill_code, 0)
+        self.assertEqual(validate_figure_code, 0)
+        self.assertEqual(pack_code, 0)
 
     def write_valid_figure_project(self, project_dir: Path):
         (project_dir / "data").mkdir()
@@ -149,9 +340,23 @@ class ResearchFigureToolTests(unittest.TestCase):
                 "export_bundle": "pass",
             },
             "statistical_claims": True,
-            "statistics": {"n definition": "Biological replicates"},
+            "statistics": {
+                "n definition": "Biological replicates per group",
+                "biological replicates": "n = 3 independent cultures",
+                "technical replicates": "Two measurements per culture",
+                "center statistic": "Mean",
+                "spread/interval": "95% CI",
+                "test": "Two-sided Welch t-test",
+                "multiple-comparison correction": "Benjamini-Hochberg",
+                "p-value display": "Exact p values in source data",
+                "source-data file": "data/source.csv",
+            },
             "image_panels": False,
         }
+        self.write_manifest(project_dir, manifest)
+        return manifest
+
+    def write_manifest(self, project_dir: Path, manifest: dict[str, object]):
         (project_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 

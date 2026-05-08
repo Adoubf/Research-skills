@@ -66,13 +66,23 @@ claim, source data, and target output instead of starting from a favorite plotti
 
 ## Bundled Scripts
 
-Use `scripts/research_figure_tool.py` for deterministic repository tasks:
+Use `scripts/research_figure_tool.py` from the installed skill root for deterministic
+validation and packaging tasks. The script has no runtime dependency beyond Python.
 
 ```bash
-uv run python research-figure/scripts/research_figure_tool.py validate-skill research-figure
-uv run python research-figure/scripts/research_figure_tool.py validate-project <project-dir>
-uv run python research-figure/scripts/research_figure_tool.py validate-figure <project-dir>
-uv run python research-figure/scripts/research_figure_tool.py pack-skill research-figure --out dist
+python scripts/research_figure_tool.py validate-skill .
+python scripts/research_figure_tool.py validate-project <project-dir>
+python scripts/research_figure_tool.py validate-figure <project-dir>
+python scripts/research_figure_tool.py pack-skill . --out dist
+```
+
+For Claude Code, run from `${CLAUDE_SKILL_DIR}` when that variable is available.
+For repository development, the console helper is also available:
+
+```bash
+uv run research-figure-tool validate-skill research-figure
+uv run research-figure-tool validate-figure examples/minimal-figure-project
+uv run research-figure-tool pack-skill research-figure --out dist
 ```
 
 The script validates project data directories, rendered figure QA metadata, export bundles, and skill package structure. It does not call any LLM API.
@@ -80,7 +90,8 @@ The script validates project data directories, rendered figure QA metadata, expo
 ## Figure Manifest for QA
 
 For final figure projects, write `manifest.json` in the project root. Keep paths project-relative.
-The `validate-figure` command checks this file against the figure contract and QA contract.
+YAML manifests are intentionally not supported. The `validate-figure` command checks
+this file against the figure contract and QA contract.
 
 ```json
 {
@@ -133,9 +144,13 @@ The `validate-figure` command checks this file against the figure contract and Q
   "statistical_claims": true,
   "statistics": {
     "n definition": "Biological replicates per group",
+    "biological replicates": "n = 3 independent cultures",
+    "technical replicates": "Two measurements per culture",
     "center statistic": "Mean",
     "spread/interval": "95% CI",
     "test": "Two-sided test",
+    "multiple-comparison correction": "Benjamini-Hochberg",
+    "p-value display": "Exact p values in source data",
     "source-data file": "data/source.csv"
   },
   "image_panels": false
@@ -145,3 +160,7 @@ The `validate-figure` command checks this file against the figure contract and Q
 `validate-figure` enforces the presence of `figure_contract`, all QA checks from
 `references/qa-contract.md`, backend-matching script extensions, SVG primary export,
 and backend-specific editable-text export settings.
+
+Use `examples/minimal-figure-project/` in the repository as the reference structure
+for a minimal valid `manifest.json`, source data directory, plotting script, and
+SVG/PDF/TIFF export bundle.

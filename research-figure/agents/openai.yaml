@@ -1,0 +1,4 @@
+interface:
+  display_name: "Research Figure"
+  short_description: "Reproduce and QA publication-grade figures."
+  default_prompt: "Use $research-figure to create or validate a publication-grade figure project from source data."

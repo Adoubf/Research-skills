@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import argparse
 import fnmatch
 import json
@@ -60,7 +61,14 @@ FIGURE_CONTRACT_FIELDS = {
     "reviewer_risk": "Reviewer risk",
 }
 
-QA_CHECKS = {
+ALLOWED_ARCHETYPES = {
+    "quantitative grid",
+    "schematic-led composite",
+    "image plate + quant",
+    "asymmetric mixed-modality figure",
+}
+
+QA_REQUIRED_PASS = {
     "core_conclusion": "Core conclusion",
     "archetype": "Archetype",
     "backend_exclusivity": "Backend exclusivity",
@@ -73,17 +81,46 @@ QA_CHECKS = {
     "legend_strategy": "Legend strategy",
     "statistics": "Statistics",
     "source_data": "Source data",
-    "raster_resolution": "Raster resolution",
-    "microscopy_scale": "Microscopy scale",
-    "image_integrity": "Image integrity",
     "export_bundle": "Export bundle",
 }
 
-PASS_VALUES = {"pass", "passed", "true", "yes", "ok", "done", "n/a", "na", "not_applicable"}
+QA_IMAGE_PANEL_FIELDS = {
+    "raster_resolution": "Raster resolution",
+    "microscopy_scale": "Microscopy scale",
+    "image_integrity": "Image integrity",
+}
+
+STATS_REQUIRED_FIELDS = [
+    "n definition",
+    "biological replicates",
+    "technical replicates",
+    "center statistic",
+    "spread/interval",
+    "test",
+    "multiple-comparison correction",
+    "p-value display",
+    "source-data file",
+]
+
+IMAGE_INTEGRITY_REQUIRED_FIELDS = [
+    "raw file",
+    "processed file",
+    "crop",
+    "brightness/contrast/gamma",
+    "pseudo-color",
+    "scale calibration",
+    "stitching",
+    "reuse in other figures",
+    "quantification link",
+]
+
+PASS_VALUES = {"pass", "passed", "true", "yes", "ok", "done"}
+NA_VALUES = {"n/a", "na", "not_applicable"}
 BACKENDS = {"python", "r"}
 SCRIPT_EXTENSIONS = {"python": {".py"}, "r": {".r"}}
 VECTOR_EXPORT_EXTENSIONS = {".svg"}
 SECONDARY_EXPORT_EXTENSIONS = {".pdf", ".tif", ".tiff", ".png"}
+FINAL_SIZE_RE = re.compile(r"\b\d+(?:\.\d+)?\s*(?:mm|cm|in|px)\b", re.IGNORECASE)
 
 EXCLUDED_NAMES = {
     ".DS_Store",
@@ -207,20 +244,29 @@ def validate_project(project_dir: Path) -> CheckResult:
 
     manifest_data: dict[str, object] | None = None
     manifest = project_dir / "manifest.json"
+    has_yaml_manifest = (project_dir / "manifest.yaml").is_file() or (
+        project_dir / "manifest.yml"
+    ).is_file()
     if manifest.is_file():
         manifest_data = load_json_manifest(manifest, result)
         if manifest_data is not None:
             validate_manifest_data(manifest, manifest_data, result)
-    elif not (project_dir / "manifest.yaml").is_file() and not (project_dir / "manifest.yml").is_file():
+    elif has_yaml_manifest:
+        result.errors.append("manifest.yaml/yml is not supported; use manifest.json")
+    else:
         result.warnings.append(
-            "No manifest found. Add manifest.json, manifest.yaml, or manifest.yml for reproducible figure tasks."
+            "No manifest found. Add manifest.json for reproducible figure tasks."
         )
 
     data_dir_value = None
     if isinstance(manifest_data, dict):
         data_dir_value = manifest_data.get("data_dir")
-    data_dir = resolve_project_path(project_dir, data_dir_value or "data")
+    data_dir = resolve_project_relative_path(
+        project_dir, data_dir_value or "data", "manifest data_dir", result
+    )
     data_dir_label = str(data_dir_value) if data_dir_value else "data/"
+    if data_dir is None:
+        return result
     if not data_dir.is_dir():
         result.errors.append(f"Missing required data directory: {data_dir_label}")
     else:
@@ -266,10 +312,10 @@ def validate_manifest_data(manifest: Path, data: dict[str, object], result: Chec
         result.errors.append("manifest backend must be either 'python' or 'r'")
     data_dir = data.get("data_dir")
     if data_dir:
-        resolved = resolve_project_path(manifest.parent, data_dir)
-        if Path(str(data_dir)).is_absolute():
-            result.warnings.append("manifest data_dir is absolute; prefer a project-relative path")
-        if not resolved.is_dir():
+        resolved = resolve_project_relative_path(
+            manifest.parent, data_dir, "manifest data_dir", result
+        )
+        if resolved is not None and not resolved.is_dir():
             result.errors.append(f"manifest data_dir does not exist: {data_dir}")
 
 
@@ -289,15 +335,21 @@ def validate_figure(project_dir: Path) -> CheckResult:
     if backend not in BACKENDS:
         result.errors.append("Figure manifest must set backend to 'python' or 'r'")
 
-    validate_figure_contract(data, result)
+    validate_figure_contract(data, backend, project_dir, result)
     validate_plot_script(project_dir, data, backend, result)
     validate_exports(project_dir, data, result)
     validate_qa_checklist(data, result)
-    validate_conditional_qa_details(data, result)
+    validate_source_data_references(project_dir, data, result)
+    validate_conditional_qa_details(project_dir, data, result)
     return result
 
 
-def validate_figure_contract(data: dict[str, object], result: CheckResult) -> None:
+def validate_figure_contract(
+    data: dict[str, object],
+    backend: str | None,
+    project_dir: Path,
+    result: CheckResult,
+) -> None:
     contract = data.get("figure_contract") or data.get("contract")
     if not isinstance(contract, dict):
         result.errors.append("manifest must include a figure_contract object")
@@ -312,6 +364,26 @@ def validate_figure_contract(data: dict[str, object], result: CheckResult) -> No
     evidence = contract.get("evidence_hierarchy")
     if not isinstance(evidence, dict) or not evidence:
         result.errors.append("figure_contract.evidence_hierarchy must be a non-empty object")
+    archetype = contract.get("figure_archetype")
+    if not is_blank(archetype):
+        normalized_archetype = normalize_text(archetype)
+        if normalized_archetype not in ALLOWED_ARCHETYPES:
+            allowed = ", ".join(sorted(ALLOWED_ARCHETYPES))
+            result.errors.append(
+                f"figure_contract.figure_archetype must be one of: {allowed}"
+            )
+    contract_backend = normalize_backend(contract.get("backend"))
+    if contract_backend and backend in BACKENDS and contract_backend != backend:
+        result.errors.append(
+            "figure_contract.backend must match manifest backend "
+            f"({contract_backend!r} != {backend!r})"
+        )
+    final_size = contract.get("final_size")
+    if not is_blank(final_size) and not is_valid_final_size(final_size):
+        result.errors.append(
+            "figure_contract.final_size must include numeric dimensions with units "
+            "(mm, cm, in, or px)"
+        )
 
 
 def validate_plot_script(
@@ -325,9 +397,11 @@ def validate_plot_script(
         result.errors.append("manifest must include script or plot_script")
         return
 
-    script_path = resolve_project_path(project_dir, script_value)
-    if Path(str(script_value)).is_absolute():
-        result.warnings.append("manifest script path is absolute; prefer a project-relative path")
+    script_path = resolve_project_relative_path(
+        project_dir, script_value, "manifest script", result
+    )
+    if script_path is None:
+        return
     if not script_path.is_file():
         result.errors.append(f"plot script does not exist: {script_value}")
         return
@@ -342,20 +416,21 @@ def validate_plot_script(
 
     text = read_text(script_path)
     if backend == "python":
-        if "svg.fonttype" not in text:
+        python_checks = inspect_python_plot_script(script_path, text, result)
+        if not python_checks["svg_fonttype_none"]:
             result.errors.append("Python plot script must set svg.fonttype='none' for editable SVG text")
-        if "pdf.fonttype" not in text:
+        if not python_checks["pdf_fonttype_42"]:
             result.warnings.append("Python plot script should set pdf.fonttype=42 for editable PDF text")
-        if "savefig" not in text:
+        if not python_checks["savefig"]:
             result.warnings.append("Python plot script does not appear to save figure outputs with savefig")
     elif backend == "r":
-        lower = text.lower()
-        if "svglite" not in lower:
+        r_checks = inspect_r_plot_script(text)
+        if not r_checks["svglite"]:
             result.errors.append("R plot script must use svglite for editable SVG export")
-        if "cairo_pdf" not in lower and "pdf(" not in lower:
-            result.warnings.append("R plot script should export PDF with cairo_pdf or pdf")
-        if "agg_tiff" not in lower and "tiff(" not in lower:
-            result.warnings.append("R plot script should export a TIFF preview with ragg::agg_tiff or tiff")
+        if not r_checks["cairo_pdf"]:
+            result.errors.append("R plot script must export PDF with grDevices::cairo_pdf")
+        if not r_checks["agg_tiff"]:
+            result.errors.append("R plot script must export TIFF preview with ragg::agg_tiff")
 
 
 def validate_exports(project_dir: Path, data: dict[str, object], result: CheckResult) -> None:
@@ -364,24 +439,24 @@ def validate_exports(project_dir: Path, data: dict[str, object], result: CheckRe
         result.errors.append("manifest must include exports or output_files")
         return
 
-    suffixes: set[str] = set()
+    existing_suffixes: set[str] = set()
     for value in export_values:
-        export_path = resolve_project_path(project_dir, value)
-        if Path(str(value)).is_absolute():
-            result.warnings.append(f"export path is absolute; prefer project-relative path: {value}")
+        export_path = resolve_project_relative_path(project_dir, value, "export path", result)
+        if export_path is None:
+            continue
         suffix = export_path.suffix.lower()
-        suffixes.add(suffix)
         if not export_path.is_file():
             result.errors.append(f"listed export does not exist: {value}")
             continue
+        existing_suffixes.add(suffix)
         if suffix == ".svg":
             inspect_svg_export(export_path, result)
 
-    if not suffixes.intersection(VECTOR_EXPORT_EXTENSIONS):
+    if not existing_suffixes.intersection(VECTOR_EXPORT_EXTENSIONS):
         result.errors.append("export bundle must include an SVG primary output")
-    if ".pdf" not in suffixes:
+    if ".pdf" not in existing_suffixes:
         result.warnings.append("export bundle should include a PDF output")
-    if not suffixes.intersection({".tif", ".tiff", ".png"}):
+    if not existing_suffixes.intersection({".tif", ".tiff", ".png"}):
         result.warnings.append("export bundle should include a TIFF or PNG preview")
 
 
@@ -398,19 +473,71 @@ def validate_qa_checklist(data: dict[str, object], result: CheckResult) -> None:
     if not isinstance(qa, dict):
         result.errors.append("manifest must include a qa object based on references/qa-contract.md")
         return
-    for key, label in QA_CHECKS.items():
+    for key, label in QA_REQUIRED_PASS.items():
         if key not in qa:
             result.errors.append(f"qa missing required check: {key} ({label})")
             continue
         if not is_pass_value(qa[key]):
             result.errors.append(f"qa check did not pass: {key} ({label})")
+    has_image_panels = truthy(data.get("image_panels"))
+    for key, label in QA_IMAGE_PANEL_FIELDS.items():
+        if key not in qa:
+            result.errors.append(f"qa missing required check: {key} ({label})")
+            continue
+        if has_image_panels:
+            if not is_pass_value(qa[key]):
+                result.errors.append(f"image-panel qa check did not pass: {key} ({label})")
+        elif not (is_pass_value(qa[key]) or is_na_value(qa[key])):
+            result.errors.append(
+                f"qa check must be pass or n/a when image_panels=false: {key} ({label})"
+            )
 
 
-def validate_conditional_qa_details(data: dict[str, object], result: CheckResult) -> None:
-    if truthy(data.get("statistical_claims")) and not isinstance(data.get("statistics"), dict):
-        result.errors.append("statistical_claims=true requires a statistics object")
-    if truthy(data.get("image_panels")) and not isinstance(data.get("image_integrity"), dict):
-        result.errors.append("image_panels=true requires an image_integrity object")
+def validate_source_data_references(
+    project_dir: Path, data: dict[str, object], result: CheckResult
+) -> None:
+    contract = data.get("figure_contract") or data.get("contract")
+    if not isinstance(contract, dict):
+        return
+    validate_source_data_value(
+        project_dir,
+        contract.get("source_data_needed"),
+        "figure_contract.source_data_needed",
+        result,
+    )
+
+
+def validate_conditional_qa_details(
+    project_dir: Path, data: dict[str, object], result: CheckResult
+) -> None:
+    if truthy(data.get("statistical_claims")):
+        statistics = data.get("statistics")
+        if not isinstance(statistics, dict):
+            result.errors.append("statistical_claims=true requires a statistics object")
+        else:
+            for field in STATS_REQUIRED_FIELDS:
+                if is_blank(statistics.get(field)):
+                    result.errors.append(f"statistics missing required field: {field}")
+            validate_source_data_value(
+                project_dir,
+                statistics.get("source-data file"),
+                "statistics.source-data file",
+                result,
+            )
+    if truthy(data.get("image_panels")):
+        image_integrity = data.get("image_integrity")
+        if not isinstance(image_integrity, dict):
+            result.errors.append("image_panels=true requires an image_integrity object")
+        else:
+            for field in IMAGE_INTEGRITY_REQUIRED_FIELDS:
+                if is_blank(image_integrity.get(field)):
+                    result.errors.append(f"image_integrity missing required field: {field}")
+            for field in ("raw file", "processed file", "quantification link"):
+                value = image_integrity.get(field)
+                if not is_blank(value) and not is_na_value(value):
+                    validate_project_file_reference(
+                        project_dir, value, f"image_integrity.{field}", result
+                    )
 
 
 def normalize_backend(value: object) -> str | None:
@@ -419,11 +546,217 @@ def normalize_backend(value: object) -> str | None:
     return str(value).strip().lower()
 
 
+def normalize_text(value: object) -> str:
+    return str(value).strip().lower()
+
+
+def is_valid_final_size(value: object) -> bool:
+    return len(FINAL_SIZE_RE.findall(str(value))) >= 2
+
+
 def resolve_project_path(project_dir: Path, value: object) -> Path:
     path = Path(str(value))
     if path.is_absolute():
         return path.resolve()
     return (project_dir / path).resolve()
+
+
+def resolve_project_relative_path(
+    project_dir: Path, value: object, label: str, result: CheckResult
+) -> Path | None:
+    if is_blank(value):
+        result.errors.append(f"{label} is blank")
+        return None
+    raw = str(value).strip()
+    path = Path(raw)
+    if path.is_absolute():
+        result.errors.append(f"{label} must be project-relative, not absolute: {raw}")
+        return None
+    resolved = (project_dir / path).resolve()
+    if not is_within(resolved, project_dir):
+        result.errors.append(f"{label} escapes project directory: {raw}")
+        return None
+    return resolved
+
+
+def is_within(path: Path, directory: Path) -> bool:
+    try:
+        path.resolve().relative_to(directory.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def validate_source_data_value(
+    project_dir: Path,
+    value: object,
+    label: str,
+    result: CheckResult,
+) -> None:
+    if is_blank(value):
+        result.errors.append(f"{label} must reference at least one source-data file")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            validate_project_data_file_reference(
+                project_dir, item, f"{label}[{index}]", result
+            )
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            validate_project_data_file_reference(
+                project_dir, item, f"{label}.{key}", result
+            )
+        return
+    validate_project_data_file_reference(project_dir, value, label, result)
+
+
+def validate_project_data_file_reference(
+    project_dir: Path, value: object, label: str, result: CheckResult
+) -> None:
+    path = validate_project_file_reference(project_dir, value, label, result)
+    if path is None:
+        return
+    if path.suffix.lower() not in DATA_EXTENSIONS:
+        allowed = ", ".join(sorted(DATA_EXTENSIONS))
+        result.errors.append(f"{label} has unsupported source-data extension: {path.suffix}; expected {allowed}")
+
+
+def validate_project_file_reference(
+    project_dir: Path, value: object, label: str, result: CheckResult
+) -> Path | None:
+    path = resolve_project_relative_path(project_dir, value, label, result)
+    if path is None:
+        return None
+    if not path.is_file():
+        result.errors.append(f"{label} does not exist: {value}")
+        return None
+    return path
+
+
+def inspect_python_plot_script(
+    script_path: Path, text: str, result: CheckResult
+) -> dict[str, bool]:
+    checks = {"svg_fonttype_none": False, "pdf_fonttype_42": False, "savefig": False}
+    try:
+        tree = ast.parse(text, filename=str(script_path))
+    except SyntaxError as exc:
+        result.errors.append(f"Python plot script has syntax error: {exc}")
+        return checks
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                update_rcparam_check(target, node.value, checks)
+        elif isinstance(node, ast.Call):
+            if is_savefig_call(node):
+                checks["savefig"] = True
+            update_rcparams_update_check(node, checks)
+    return checks
+
+
+def update_rcparam_check(
+    target: ast.expr, value_node: ast.AST, checks: dict[str, bool]
+) -> None:
+    key = rcparams_subscript_key(target)
+    if key == "svg.fonttype" and literal_value(value_node) == "none":
+        checks["svg_fonttype_none"] = True
+    if key == "pdf.fonttype" and literal_value(value_node) in {42, "42"}:
+        checks["pdf_fonttype_42"] = True
+
+
+def update_rcparams_update_check(node: ast.Call, checks: dict[str, bool]) -> None:
+    if not (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr == "update"
+        and is_rcparams_object(node.func.value)
+    ):
+        return
+    if not node.args:
+        return
+    mapping = literal_value(node.args[0])
+    if not isinstance(mapping, dict):
+        return
+    if mapping.get("svg.fonttype") == "none":
+        checks["svg_fonttype_none"] = True
+    if mapping.get("pdf.fonttype") in {42, "42"}:
+        checks["pdf_fonttype_42"] = True
+
+
+def rcparams_subscript_key(target: ast.expr) -> str | None:
+    if not isinstance(target, ast.Subscript) or not is_rcparams_object(target.value):
+        return None
+    key = literal_value(target.slice)
+    if isinstance(key, str):
+        return key
+    return None
+
+
+def is_rcparams_object(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "rcParams"
+        and dotted_name(node.value) in {"plt", "mpl", "matplotlib"}
+    )
+
+
+def is_savefig_call(node: ast.Call) -> bool:
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "savefig":
+        return True
+    return isinstance(node.func, ast.Name) and node.func.id == "savefig"
+
+
+def dotted_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = dotted_name(node.value)
+        if prefix:
+            return f"{prefix}.{node.attr}"
+    return None
+
+
+def literal_value(node: ast.AST) -> object:
+    try:
+        return ast.literal_eval(node)
+    except (ValueError, TypeError):
+        return None
+
+
+def inspect_r_plot_script(text: str) -> dict[str, bool]:
+    cleaned = strip_r_comments(text)
+    return {
+        "svglite": bool(re.search(r"\b(?:svglite::)?svglite\s*\(", cleaned)),
+        "cairo_pdf": bool(re.search(r"\b(?:grDevices::)?cairo_pdf\s*\(", cleaned)),
+        "agg_tiff": bool(re.search(r"\b(?:ragg::)?agg_tiff\s*\(", cleaned)),
+    }
+
+
+def strip_r_comments(text: str) -> str:
+    lines: list[str] = []
+    for line in text.splitlines():
+        in_single = False
+        in_double = False
+        escaped = False
+        kept: list[str] = []
+        for char in line:
+            if escaped:
+                kept.append(char)
+                escaped = False
+                continue
+            if char == "\\":
+                kept.append(char)
+                escaped = True
+                continue
+            if char == "'" and not in_double:
+                in_single = not in_single
+            elif char == '"' and not in_single:
+                in_double = not in_double
+            if char == "#" and not in_single and not in_double:
+                break
+            kept.append(char)
+        lines.append("".join(kept))
+    return "\n".join(lines)
 
 
 def is_blank(value: object) -> bool:
@@ -450,6 +783,12 @@ def is_pass_value(value: object) -> bool:
     if value is None:
         return False
     return str(value).strip().lower().replace("-", "_").replace(" ", "_") in PASS_VALUES
+
+
+def is_na_value(value: object) -> bool:
+    if value is None:
+        return False
+    return str(value).strip().lower().replace("-", "_").replace(" ", "_") in NA_VALUES
 
 
 def flatten_exports(exports: object) -> list[object]:
@@ -480,7 +819,8 @@ def pack_skill(skill_dir: Path, out_dir: Path, zip_output: bool = True) -> Path:
     if package_dir.exists():
         shutil.rmtree(package_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(skill_dir, package_dir, ignore=copy_ignore)
+    shutil.copytree(skill_dir, package_dir, ignore=make_copy_ignore({out_dir}))
+    copy_license_into_package(skill_dir, package_dir)
 
     if zip_output:
         zip_path = out_dir / f"{skill_dir.name}.zip"
@@ -492,6 +832,28 @@ def pack_skill(skill_dir: Path, out_dir: Path, zip_output: bool = True) -> Path:
                     zf.write(path, path.relative_to(out_dir))
         return zip_path
     return package_dir
+
+
+def make_copy_ignore(skip_dirs: set[Path]):
+    resolved_skip_dirs = {path.resolve() for path in skip_dirs}
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        ignored = copy_ignore(directory, names)
+        directory_path = Path(directory).resolve()
+        for name in names:
+            candidate = (directory_path / name).resolve()
+            if any(candidate == skip_dir for skip_dir in resolved_skip_dirs):
+                ignored.add(name)
+        return ignored
+
+    return ignore
+
+
+def copy_license_into_package(skill_dir: Path, package_dir: Path) -> None:
+    for candidate in (skill_dir / "LICENSE", skill_dir.parent / "LICENSE"):
+        if candidate.is_file():
+            shutil.copy2(candidate, package_dir / "LICENSE")
+            return
 
 
 def copy_ignore(_directory: str, names: list[str]) -> set[str]:
